@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 실행 중 생성되는 데이터(각자 로컬에서 관리)
+data/
+*.jsonl
+!tests/**/*.jsonl
+
+# 내보내기 결과물
+export*.csv
