@@ -36,6 +36,7 @@ from .validators import (
     parse_amount,
     parse_category_name,
     parse_date,
+    parse_memo,
     parse_month,
     parse_tags,
     parse_transaction_id,
@@ -109,7 +110,7 @@ def cmd_add(args: argparse.Namespace, storage: Storage) -> int:
         raw_type=ask("타입(income/expense): ", parse_type),
         raw_category=ask("카테고리: ", categories.ensure_exists),
         raw_amount=ask("금액(양수): ", parse_amount),
-        memo=ask("메모(선택): ", allow_empty=True, default="") or "",
+        memo=ask("메모(선택): ", parse_memo, allow_empty=True, default=""),
         raw_tags=ask("태그(쉼표로 구분, 없으면 엔터): ", parse_tags, allow_empty=True, default=[]),
     )
     print(f"[저장 완료] id={transaction.id}")

@@ -78,6 +78,13 @@ def handle_errors(func: Callable[P, int]) -> Callable[P, int]:
             )
             _print_error(wrapped.message, wrapped.hint)
             return wrapped.exit_code
+        except Exception as exc:  # 최종 방어선: 스택트레이스가 새어나가지 않게 한다
+            logger.debug("unexpected error in %s", func.__qualname__, exc_info=True)
+            _print_error(
+                f"예상치 못한 오류가 발생했습니다: {type(exc).__name__}: {exc}",
+                "--verbose 옵션으로 자세한 내용을 확인할 수 있습니다.",
+            )
+            return 1
 
     return wrapper
 

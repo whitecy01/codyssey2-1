@@ -16,7 +16,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from budget_app.cli import main  # noqa: E402
-from budget_app.errors import ConflictError, NotFoundError, ValidationError  # noqa: E402
+from budget_app.errors import (  # noqa: E402
+    ConflictError,
+    NotFoundError,
+    StorageError,
+    ValidationError,
+)
 from budget_app.formatting import format_transaction  # noqa: E402
 from budget_app.models import Transaction  # noqa: E402
 from budget_app.services import (  # noqa: E402
@@ -27,8 +32,23 @@ from budget_app.services import (  # noqa: E402
     TransactionService,
     TransferService,
 )
-from budget_app.storage import Storage  # noqa: E402
-from budget_app.validators import parse_amount, parse_date, parse_month, parse_tags  # noqa: E402
+from budget_app.storage import (  # noqa: E402
+    MAX_TRANSACTION_NUMBER,
+    Storage,
+    format_transaction_id,
+)
+from budget_app.validators import (  # noqa: E402
+    MAX_AMOUNT,
+    MAX_MEMO_LENGTH,
+    MAX_TAG_COUNT,
+    MAX_TAG_LENGTH,
+    parse_amount,
+    parse_date,
+    parse_memo,
+    parse_month,
+    parse_tags,
+    parse_transaction_id,
+)
 
 
 class CliTestCase(unittest.TestCase):
@@ -108,6 +128,113 @@ class TestAddAndList(CliTestCase):
         code, out, _ = self.run_cli("list")
         self.assertEqual(code, 0)
         self.assertIn("저장된 거래가 없습니다", out)
+
+    def test_add_rejects_oversized_amount_then_accepts_valid(self) -> None:
+        huge = "1" + "0" * 180
+        stdin = f"2024-01-15\nexpense\nfood\n{huge}\n15000\n\n\n"
+        code, out, err = self.run_cli("add", stdin=stdin)
+        self.assertEqual(code, 0)
+        self.assertIn("금액이 너무 큽니다", err)
+        self.assertIn("[저장 완료]", out)
+
+    def test_add_reprompts_on_oversized_memo_and_tags(self) -> None:
+        stdin = (
+            "2024-01-15\nexpense\nfood\n15000\n"
+            + "가" * 201 + "\n"          # 메모: 길이 초과 → 재입력
+            + "점심\n"
+            + ",".join(f"t{i}" for i in range(11)) + "\n"   # 태그: 개수 초과 → 재입력
+            + "meal\n"
+        )
+        code, out, err = self.run_cli("add", stdin=stdin)
+        self.assertEqual(code, 0, err)
+        self.assertIn("메모는 200자 이하여야 합니다", err)
+        self.assertIn("태그는 최대 10개까지", err)
+        self.assertIn("[저장 완료]", out)
+
+        record = json.loads((self.data_dir / "transactions.jsonl").read_text("utf-8").strip())
+        self.assertEqual(record["memo"], "점심")
+        self.assertEqual(record["tags"], ["meal"])
+
+    def test_budget_set_rejects_oversized_amount(self) -> None:
+        code, _, err = self.run_cli(
+            "budget", "set", "--month", "2024-01", "--amount", "1" + "0" * 400
+        )
+        self.assertNotEqual(code, 0)
+        self.assertIn("금액이 너무 큽니다", err)
+        self.assertNotIn("Traceback", err)
+
+
+class TestTransactionIdLimit(CliTestCase):
+    """거래 id 는 6자리로 고정되어야 정렬(문자열 비교)이 정확하다."""
+
+    def _seed_last_id(self, number: int) -> None:
+        """transactions.jsonl 에 특정 번호의 거래 한 건을 직접 심는다."""
+        self.run_cli("category", "list")  # 저장 폴더 초기화
+        record = {
+            "id": f"TX-{number:06d}", "date": "2024-01-01", "type": "expense",
+            "category": "food", "amount": 1000, "memo": "", "tags": [],
+        }
+        path = self.data_dir / "transactions.jsonl"
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def test_format_transaction_id_boundary(self) -> None:
+        self.assertEqual(format_transaction_id(1), "TX-000001")
+        self.assertEqual(format_transaction_id(MAX_TRANSACTION_NUMBER), "TX-999999")
+        with self.assertRaises(StorageError):
+            format_transaction_id(MAX_TRANSACTION_NUMBER + 1)
+
+    def test_add_refuses_beyond_six_digits(self) -> None:
+        self._seed_last_id(MAX_TRANSACTION_NUMBER)
+        stdin = "2024-01-15\nexpense\nfood\n15000\n\n\n"
+        code, _, err = self.run_cli("add", stdin=stdin)
+        self.assertNotEqual(code, 0)
+        self.assertIn("거래 id가 한도를 초과했습니다", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_add_still_works_just_below_limit(self) -> None:
+        self._seed_last_id(MAX_TRANSACTION_NUMBER - 1)
+        new_id = self.add_transaction("2024-01-15", "expense", "food", "15000")
+        self.assertEqual(new_id, "TX-999999")
+
+    def test_parse_transaction_id_rejects_wrong_width(self) -> None:
+        self.assertEqual(parse_transaction_id("tx-000012"), "TX-000012")
+        for bad in ("TX-1000000", "TX-12345", "TX-", "000012"):
+            with self.assertRaises(ValidationError, msg=bad):
+                parse_transaction_id(bad)
+
+
+class TestErrorSafety(CliTestCase):
+    """예상치 못한 예외도 스택트레이스 없이 종료 코드로 변환되어야 한다."""
+
+    def test_unexpected_exception_is_wrapped(self) -> None:
+        import argparse
+
+        from budget_app.cli import cmd_list
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("터졌다")
+
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cmd_list(argparse.Namespace(limit=None), boom)  # type: ignore[arg-type]
+
+        self.assertEqual(code, 1)
+        self.assertIn("예상치 못한 오류", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+    def test_corrupted_amount_record_is_skipped_not_crashed(self) -> None:
+        self.add_transaction("2024-01-15", "expense", "food", "15000")
+        path = self.data_dir / "transactions.jsonl"
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"id": "TX-000099", "date": "2024-01-16",
+                                     "type": "expense", "category": "food",
+                                     "amount": 10**400}) + "\n")
+
+        code, out, err = self.run_cli("summary", "--month", "2024-01")
+        self.assertEqual(code, 0, err)
+        self.assertIn("총 지출: 15000원", out)
+        self.assertNotIn("Traceback", err)
 
 
 class TestSearch(CliTestCase):
@@ -494,9 +621,29 @@ class TestValidators(unittest.TestCase):
             with self.assertRaises(ValidationError, msg=bad):
                 parse_amount(bad)
 
+    def test_parse_amount_rejects_over_upper_bound(self) -> None:
+        self.assertEqual(parse_amount(MAX_AMOUNT), MAX_AMOUNT)
+        for bad in (MAX_AMOUNT + 1, 10**180, 10**400):
+            with self.assertRaises(ValidationError, msg=str(bad)):
+                parse_amount(bad)
+
     def test_parse_tags_dedupes_and_trims(self) -> None:
         self.assertEqual(parse_tags(" a , b ,a,, "), ["a", "b"])
         self.assertEqual(parse_tags(None), [])
+
+    def test_parse_tags_rejects_long_or_too_many(self) -> None:
+        self.assertEqual(parse_tags("a" * MAX_TAG_LENGTH), ["a" * MAX_TAG_LENGTH])
+        with self.assertRaises(ValidationError):
+            parse_tags("a" * (MAX_TAG_LENGTH + 1))
+        with self.assertRaises(ValidationError):
+            parse_tags(",".join(f"t{i}" for i in range(MAX_TAG_COUNT + 1)))
+
+    def test_parse_memo_length(self) -> None:
+        self.assertEqual(parse_memo("  점심  "), "점심")
+        self.assertEqual(parse_memo(None), "")
+        self.assertEqual(len(parse_memo("가" * MAX_MEMO_LENGTH)), MAX_MEMO_LENGTH)
+        with self.assertRaises(ValidationError):
+            parse_memo("가" * (MAX_MEMO_LENGTH + 1))
 
 
 class TestFormatting(unittest.TestCase):

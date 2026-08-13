@@ -21,11 +21,12 @@ from typing import Any
 from .decorators import log_call, timed
 from .errors import ConflictError, NotFoundError, StorageError, ValidationError
 from .models import Budget, Category, MonthlySummary, Transaction
-from .storage import Storage
+from .storage import Storage, format_transaction_id
 from .validators import (
     parse_amount,
     parse_category_name,
     parse_date,
+    parse_memo,
     parse_month,
     parse_tags,
     parse_type,
@@ -172,7 +173,7 @@ class TransactionService:
             type=parse_type(raw_type),
             category=self._categories.ensure_exists(raw_category),
             amount=parse_amount(raw_amount),
-            memo=(memo or "").strip(),
+            memo=parse_memo(memo),
             tags=parse_tags(raw_tags),
         )
         return self._storage.transactions.add(transaction)
@@ -231,7 +232,7 @@ class TransactionService:
                 case "amount":
                     updated.amount = parse_amount(raw_value)
                 case "memo":
-                    updated.memo = str(raw_value).strip()
+                    updated.memo = parse_memo(str(raw_value))
                 case "tags":
                     updated.tags = parse_tags(raw_value)
                 case _:
@@ -370,12 +371,12 @@ class TransferService:
                         result.created_categories.append(category)
 
                     transaction = Transaction(
-                        id=f"TX-{next_number:06d}",
+                        id=format_transaction_id(next_number),
                         date=parse_date(str(row.get("date", ""))),
                         type=parse_type(str(row.get("type", ""))),
                         category=category,
                         amount=parse_amount(str(row.get("amount", ""))),
-                        memo=str(row.get("memo", "") or "").strip(),
+                        memo=parse_memo(str(row.get("memo", "") or "")),
                         tags=parse_tags(row.get("tags")),
                     )
                 except (ValidationError, NotFoundError) as exc:

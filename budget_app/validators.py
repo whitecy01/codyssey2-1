@@ -14,8 +14,16 @@ from .errors import ValidationError
 
 TRANSACTION_TYPES: tuple[str, ...] = ("income", "expense")
 
+# 입력 크기 상한. 무제한이면 출력이 무너지고, 큰 정수는 예산 사용률 계산(float)에서
+# OverflowError 를 일으키므로 저장 전에 막는다.
+MAX_AMOUNT: int = 10_000_000_000_000_000  # 1경
+MAX_MEMO_LENGTH: int = 200
+MAX_TAG_LENGTH: int = 20
+MAX_TAG_COUNT: int = 10
+MAX_CATEGORY_LENGTH: int = 30
+
 _MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
-_ID_PATTERN = re.compile(r"^TX-\d{6,}$")
+_ID_PATTERN = re.compile(r"^TX-\d{6}$")  # 6자리 고정(storage.MAX_TRANSACTION_NUMBER 와 짝)
 
 
 def parse_date(raw: str) -> str:
@@ -63,6 +71,11 @@ def parse_amount(raw: str | int) -> int:
         ) from None
     if amount <= 0:
         raise ValidationError("금액은 0보다 큰 값이어야 합니다.", "예: 15000")
+    if amount > MAX_AMOUNT:
+        raise ValidationError(
+            f"금액이 너무 큽니다 ({len(str(amount))}자리).",
+            f"최대 {MAX_AMOUNT:,}원까지 입력할 수 있습니다.",
+        )
     return amount
 
 
@@ -84,9 +97,30 @@ def parse_tags(raw: str | list[str] | None) -> list[str]:
     tags: list[str] = []
     for item in items:
         tag = str(item).strip()
-        if tag and tag not in tags:
-            tags.append(tag)
+        if not tag or tag in tags:
+            continue
+        if len(tag) > MAX_TAG_LENGTH:
+            raise ValidationError(
+                f"태그는 {MAX_TAG_LENGTH}자 이하여야 합니다: {tag[:MAX_TAG_LENGTH]}…",
+                f"입력값 길이: {len(tag)}",
+            )
+        tags.append(tag)
+    if len(tags) > MAX_TAG_COUNT:
+        raise ValidationError(
+            f"태그는 최대 {MAX_TAG_COUNT}개까지 지정할 수 있습니다.",
+            f"입력한 태그 수: {len(tags)}",
+        )
     return tags
+
+
+def parse_memo(raw: str | None) -> str:
+    """메모를 검증한다(선택 항목이므로 빈 값은 허용)."""
+    text = (raw or "").strip()
+    if len(text) > MAX_MEMO_LENGTH:
+        raise ValidationError(
+            f"메모는 {MAX_MEMO_LENGTH}자 이하여야 합니다.", f"입력값 길이: {len(text)}"
+        )
+    return text
 
 
 def parse_category_name(raw: str) -> str:
@@ -94,8 +128,10 @@ def parse_category_name(raw: str) -> str:
     text = (raw or "").strip()
     if not text:
         raise ValidationError("카테고리명이 비어 있습니다.", "예: food")
-    if len(text) > 30:
-        raise ValidationError("카테고리명은 30자 이하여야 합니다.", f"입력값 길이: {len(text)}")
+    if len(text) > MAX_CATEGORY_LENGTH:
+        raise ValidationError(
+            f"카테고리명은 {MAX_CATEGORY_LENGTH}자 이하여야 합니다.", f"입력값 길이: {len(text)}"
+        )
     if "," in text or any(ch.isspace() for ch in text):
         raise ValidationError(
             f"카테고리명에 공백이나 쉼표를 사용할 수 없습니다: {text!r}",

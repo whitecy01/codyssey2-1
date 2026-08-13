@@ -31,6 +31,11 @@ from .models import Budget, Category, Transaction
 
 DEFAULT_CATEGORIES: tuple[str, ...] = ("food", "transport", "rent", "salary", "etc")
 
+# 거래 id 는 항상 6자리 0채움(TX-000001)으로 고정한다.
+# 자릿수가 섞이면 Transaction.sort_key 의 문자열 비교가 깨지므로
+# (예: "TX-999999" > "TX-1000000") 한도를 넘으면 새 id 발급을 거부한다.
+MAX_TRANSACTION_NUMBER: int = 999_999
+
 
 class JsonlFile:
     """JSONL 파일 하나에 대한 저수준 접근(읽기 스트림 / 추가 / 원자적 재작성)."""
@@ -160,13 +165,16 @@ class TransactionRepository:
         return None
 
     def next_id(self) -> str:
-        """저장된 최대 번호 + 1 로 새 id(TX-000001)를 만든다."""
+        """저장된 최대 번호 + 1 로 새 id(TX-000001)를 만든다.
+
+        6자리를 넘기면 정렬 규칙이 깨지므로 발급을 거부한다.
+        """
         largest = 0
         for transaction in self.stream():
             _, _, digits = transaction.id.partition("-")
             if digits.isdigit():
                 largest = max(largest, int(digits))
-        return f"TX-{largest + 1:06d}"
+        return format_transaction_id(largest + 1)
 
     @timed
     @log_call
@@ -358,6 +366,16 @@ class Storage:
             if store.ensure():
                 created.append(store.path)
         return created
+
+
+def format_transaction_id(number: int) -> str:
+    """번호를 `TX-000001` 형식으로 만든다. 6자리를 넘으면 거부한다."""
+    if number > MAX_TRANSACTION_NUMBER:
+        raise StorageError(
+            f"거래 id가 한도를 초과했습니다 (최대 {MAX_TRANSACTION_NUMBER:,}건).",
+            "export 로 내보낸 뒤 정리하거나, --data-dir 로 새 저장 폴더를 사용하세요.",
+        )
+    return f"TX-{number:06d}"
 
 
 def _now() -> str:

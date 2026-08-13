@@ -10,3 +10,10 @@ data/
 
 # 내보내기 결과물
 export*.csv
+sample*.csv
+
+# 에디터 / 도구 설정
+.claude/
+.vscode/
+.idea/
+.DS_Store
